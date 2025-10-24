@@ -2,11 +2,13 @@
 #include <chrono>
 #include <atomic>
 #include <thread>
+#include <vector>
+#include <algorithm>
 #include "../core/spsc_ring.hpp"
 
-struct timestamp {
-
-}
+struct Timestamp {
+    std::chrono::steady_clock::time_point t;
+};
 
 template<class T>
 void test_throughput(SpscRing<T>& q, const T& val, T& out, const size_t n_ops){
@@ -22,7 +24,7 @@ void test_throughput(SpscRing<T>& q, const T& val, T& out, const size_t n_ops){
 }
 
 template<class T>
-void test_minimal_concurrent_throughput_with_timestamps(SpscRing<T>& q, const T& val, std::vector<T>& message_buffer, const size_t n_ops) {
+void test_minimal_concurrent_throughput(SpscRing<T>& q, const T& val, const size_t n_ops) {
     std::atomic<bool> stop_flag{false};
     size_t pop_count = 0;
 
@@ -54,10 +56,59 @@ void test_minimal_concurrent_throughput_with_timestamps(SpscRing<T>& q, const T&
 
 }
 
+void test_minimal_concurrent_latency(SpscRing<Timestamp>& q, const size_t n_ops) {
+    using clock = std::chrono::steady_clock;
+    std::atomic<bool> stop_flag{false};
+    std::vector<uint64_t> latencies;
+    latencies.reserve(n_ops);
+
+    std::thread consumer([&](){
+        Timestamp local_out;
+
+        while(!stop_flag.load(std::memory_order_relaxed)) {
+            if (q.try_pop(local_out)) {
+                auto lat_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now() - local_out.t);
+                latencies.emplace_back(lat_ns.count());
+            };
+        }
+
+        while (q.try_pop(local_out)) {
+            auto lat_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now() - local_out.t);
+            latencies.emplace_back(lat_ns.count());
+        }
+
+    });
+
+    auto start = std::chrono::steady_clock::now();
+    
+    for(size_t i = 0; i < n_ops; i++) {
+        Timestamp ts {clock::now()};
+        while (!q.try_push(ts)) {}
+    }
+    stop_flag.store(true, std::memory_order_relaxed);
+    consumer.join();
+
+    if (latencies.empty()) {
+        std::cout << "no samples\n";
+        return;
+    }
+
+    std::sort(latencies.begin(), latencies.end());
+    auto percentile = [&](double p) {
+        return latencies[static_cast<size_t>((p/100.0) * (latencies.size() - 1))];
+    };
+    std::cout << "latencies (ns) - min:" << latencies.front() 
+    << " | p50: " << percentile(50) 
+    << " | p95: " << percentile(95) 
+    << " | p99: " << percentile(99) 
+    << " | max: " << latencies.back() 
+    << std::endl;
+}
+
 int main() {
-    SpscRing<int> q (1<<12);
-    int x = 100, out;
+    SpscRing<Timestamp> q (1<<10);
+    // int x = 100, out;
     const size_t n_ops = 1<<25;
-    test_minimal_concurrent_throughput_with_timestamps<int>(q, x, n_ops);
+    test_minimal_concurrent_latency(q, n_ops);
 }
 
