@@ -43,4 +43,8 @@ class SpscRing {
         m_tail.store((tail+1) & m_mask, std::memory_order_release);
         return true;
     }
+
+    bool empty() {
+        return m_head.load(std::memory_order_acquire) == m_tail.load(std::memory_order_acquire);
+    }
 };
